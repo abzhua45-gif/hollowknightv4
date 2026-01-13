@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<base href="https://cdn.jsdelivr.net/gh/aukak/hollow-knight@latest/">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+<title>Hollow Knight — Chromebook Mode</title>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+
+html,body{
+ width:100%;
+ height:100%;
+ overflow:hidden;
+ background:#000;
+ font-family:Arial,sans-serif;
+}
+
+/* ===== Hollow Knight Background ===== */
+body::before{
+ content:"";
+ position:fixed;
+ inset:0;
+ background:
+  linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,.85)),
+  url("https://cdn.jsdelivr.net/gh/aukak/hollow-knight@latest/Backgrounds/bg_city.png");
+ background-size:cover;
+ background-position:center;
+ filter:blur(6px);
+ transform:scale(1.1);
+ z-index:-1;
+}
+
+/* ===== Container ===== */
+#container{
+ width:1820px;
+ height:720px;
+ max-width:100vw;
+ max-height:100vh;
+ display:flex;
+ justify-content:center;
+ align-items:center;
+ margin:auto;
+}
+
+/* ===== Unity Canvas ===== */
+canvas{
+ width:1820px;
+ height:720px;
+ display:block;
+ background:#000;
+ image-rendering:pixelated;
+ touch-action:none;
+}
+
+/* ===== Loading Text ===== */
+#loading-text{
+ position:fixed;
+ top:50%;
+ left:50%;
+ transform:translate(-50%,-50%);
+ color:#ddd;
+ font-size:18px;
+ text-shadow:0 0 8px #000;
+}
+
+/* ===== Fullscreen Button ===== */
+#fullscreen-btn{
+ position:fixed;
+ bottom:16px;
+ right:18px;
+ padding:10px 16px;
+ font-size:14px;
+ background:rgba(0,0,0,.75);
+ color:#fff;
+ border:1px solid rgba(255,255,255,.25);
+ border-radius:8px;
+ cursor:pointer;
+ z-index:9999;
+ backdrop-filter:blur(6px);
+}
+
+#fullscreen-btn:hover{
+ background:rgba(30,30,30,.9);
+}
+
+:fullscreen #fullscreen-btn{
+ display:none;
+}
+</style>
+</head>
+
+<body>
+
+<div id="loading-text">Loading…</div>
+
+<div id="container">
+ <canvas id="unity-canvas" width="1820" height="720"></canvas>
+</div>
+
+<button id="fullscreen-btn">⛶ Fullscreen</button>
+
+<script>
+/* =========================================================
+   CHROMEBOOK GPU OPTIMIZATION (Lenovo 300e / 4GB)
+   ========================================================= */
+
+window.Module = {
+ webglContextAttributes:{
+  alpha:false,
+  depth:false,
+  stencil:false,
+  antialias:false,
+  preserveDrawingBuffer:false,
+  powerPreference:"low-power"
+ }
+};
+
+const canvas = document.getElementById("unity-canvas");
+canvas.width = 1820;
+canvas.height = 720;
+
+/* =========================================================
+   MEMORY-SAFE STREAMING LOADER
+   ========================================================= */
+
+let loadedBytes = 0;
+const TOTAL_MB = 912.81;
+const loadingText = document.getElementById("loading-text");
+
+async function fetchPart(url){
+ const res = await fetch(url);
+ const reader = res.body.getReader();
+ const chunks = [];
+
+ while(true){
+  const {done,value} = await reader.read();
+  if(done) break;
+
+  loadedBytes += value.length;
+  chunks.push(value);
+
+  loadingText.textContent =
+   (loadedBytes / 1048576).toFixed(1) + " / " + TOTAL_MB + " MB";
+ }
+
+ const blob = new Blob(chunks,{type:"application/octet-stream"});
+ chunks.length = 0;
+ return blob;
+}
+
+function parts(name,start,end){
+ return Array.from({length:end-start+1},(_,i)=>`${name}.part${start+i}`);
+}
+
+async function loadMerged(list){
+ const blobs = [];
+ for(const p of list) blobs.push(await fetchPart(p));
+ const merged = new Blob(blobs,{type:"application/octet-stream"});
+ blobs.length = 0;
+ return URL.createObjectURL(merged);
+}
+
+/* =========================================================
+   LOAD UNITY
+   ========================================================= */
+
+(async()=>{
+ try{
+  const dataUrl = await loadMerged(parts("Build/hktruffled.data",1,45));
+  const wasmUrl = await loadMerged(parts("Build/hktruffled.wasm",1,2));
+
+  const script = document.createElement("script");
+  script.src = "Build/hktruffled.loader.js";
+
+  script.onload = () => {
+   createUnityInstance(canvas,{
+    dataUrl:dataUrl,
+    frameworkUrl:"Build/hktruffled.framework.js",
+    codeUrl:wasmUrl,
+    streamingAssetsUrl:"StreamingAssets",
+    matchWebGLToCanvasSize:false,
+    devicePixelRatio:1,
+    companyName:"Team Cherry",
+    productName:"Hollow Knight",
+    productVersion:"1.0"
+   }).then(()=>{
+    loadingText.remove();
+    setTimeout(()=>{ if(window.gc) window.gc(); },1000);
+   }).catch(err=>{
+    console.error(err);
+    loadingText.textContent="Failed to load";
+   });
+  };
+
+  document.body.appendChild(script);
+ }catch(e){
+  console.error(e);
+  loadingText.textContent="Load error";
+ }
+})();
+
+/* =========================================================
+   FULLSCREEN + ACCIDENTAL CLOSE PROTECTION
+   Browser-only / Local-safe
+   ========================================================= */
+
+const fsBtn = document.getElementById("fullscreen-btn");
+
+function enterFullscreen(){
+ if(!document.fullscreenElement){
+  document.documentElement.requestFullscreen().catch(()=>{});
+ }
+}
+
+fsBtn.addEventListener("click", enterFullscreen);
+
+/* Auto fullscreen on first interaction */
+let fsTriggered = false;
+["pointerdown","keydown","touchstart"].forEach(evt=>{
+ window.addEventListener(evt,()=>{
+  if(!fsTriggered){
+   fsTriggered = true;
+   enterFullscreen();
+  }
+ },{once:true});
+});
+
+/* Prevent tab close / refresh */
+window.addEventListener("beforeunload",(e)=>{
+ e.preventDefault();
+ e.returnValue = "";
+});
+
+/* Block swipe-back */
+history.pushState(null,"",location.href);
+window.addEventListener("popstate",()=>{
+ history.pushState(null,"",location.href);
+});
+
+/* Prevent accidental ESC exit */
+document.addEventListener("keydown",(e)=>{
+ if(e.key === "Escape" && document.fullscreenElement){
+  e.preventDefault();
+ }
+});
+
+/* Keep focus */
+setInterval(()=>{
+ if(document.fullscreenElement){
+  canvas.focus();
+ }
+},1200);
+
+/* Prevent stutter on tab return */
+document.addEventListener("visibilitychange",()=>{
+ if(!document.hidden) canvas.focus();
+});
+</script>
+
+</body>
+</html>
